@@ -1,0 +1,216 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'sam-app
+
+  Sample SAM Template for sam-app
+
+  '
+Globals:
+  Function:
+    Timeout: 60
+Parameters:
+  unauthRole:
+    Type: String
+    Description: Unauth Role associated with this project
+  graphqlApi:
+    Type: String
+    Description: AppSync API ID associated with this project
+  graphqlEndpoint:
+    Type: String
+    Description: AppSync Endpoint associated with this project
+  tmdbApiKey:
+    Type: String
+    Description: API Key to access TMDb
+Resources:
+  pubSubDataSource:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      Type: NONE
+      Description: Local Resolver
+      ApiId:
+        Ref: graphqlApi
+      Name: PubSub
+  pubSubResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId:
+        Ref: graphqlApi
+      TypeName: Mutation
+      FieldName: createMessage
+      DataSourceName:
+        Fn::GetAtt:
+        - pubSubDataSource
+        - Name
+      RequestMappingTemplate: "{\n    \"version\": \"2017-02-28\",\n    \"payload\"\
+        : {\n        \"message\": \"${context.arguments.message}\",\n        \"sentAt\"\
+        : \"$util.time.nowISO8601()\"\n    }\n}\n"
+      ResponseMappingTemplate: '$util.toJson($context.result)
+
+        '
+  GetMovieFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: s3://amplify-realtime-dev-134407-deployment/2eab06bc316d65c05567f0126a871402
+      Handler: app.lambdaHandler
+      Runtime: nodejs10.x
+      Role:
+        Fn::GetAtt:
+        - LambdaExecutionRole
+        - Arn
+      Environment:
+        Variables:
+          ENDPOINT:
+            Ref: graphqlEndpoint
+          TMDBKEY:
+            Ref: tmdbApiKey
+  IteratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      InlineCode: "import boto3\nimport os\n\nclient = boto3.client('lambda')\nfunction\
+        \ = os.environ['FUNCTION']\n\ndef lambda_handler(event, context):\n    index\
+        \ = event['iterator']['index'] + 1\n    response = client.invoke(\n      \
+        \  FunctionName=function,\n        InvocationType='Event'\n    )\n    return\
+        \ {\n            'index': index,\n            'continue': index < event['iterator']['count'],\n\
+        \            'count': event['iterator']['count']\n        }\n"
+      Handler: index.lambda_handler
+      Runtime: python2.7
+      Role:
+        Fn::GetAtt:
+        - LambdaExecutionRole
+        - Arn
+      Environment:
+        Variables:
+          FUNCTION:
+            Fn::GetAtt:
+            - GetMovieFunction
+            - Arn
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: LambdaInvokePolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - lambda:*
+            - appsync:GraphQL
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+  StatesExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - Fn::Sub: states.${AWS::Region}.amazonaws.com
+          Action: sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: StatesExecutionPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - lambda:InvokeFunction
+            Resource: '*'
+  UnauthRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: AppSyncInvoke
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action: appsync:GraphQL
+          Resource:
+          - Fn::Join:
+            - /
+            - - Fn::Join:
+                - ':'
+                - - arn:aws:appsync
+                  - Ref: AWS::Region
+                  - Ref: AWS::AccountId
+                  - apis
+              - Ref: graphqlApi
+              - '*'
+      Roles:
+      - Ref: unauthRole
+  LambdaTimerStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      DefinitionString:
+        Fn::Sub:
+        - "{\n    \"Comment\": \"Invoke Lambda every 10 seconds\",\n    \"StartAt\"\
+          : \"ConfigureCount\",\n    \"States\": {\n        \"ConfigureCount\": {\n\
+          \            \"Type\": \"Pass\",\n            \"Result\": {\n          \
+          \      \"index\": 0,\n                \"count\": 6\n            },\n   \
+          \         \"ResultPath\": \"$.iterator\",\n            \"Next\": \"Iterator\"\
+          \n        },\n        \"Iterator\": {\n            \"Type\": \"Task\",\n\
+          \            \"Resource\": \"${lambdaArn}\",\n            \"ResultPath\"\
+          : \"$.iterator\",\n            \"Next\": \"IsCountReached\"\n        },\n\
+          \        \"IsCountReached\": {\n            \"Type\": \"Choice\",\n    \
+          \        \"Choices\": [\n                {\n                    \"Variable\"\
+          : \"$.iterator.continue\",\n                    \"BooleanEquals\": true,\n\
+          \                    \"Next\": \"Wait\"\n                }\n           \
+          \ ],\n            \"Default\": \"Done\"\n        },\n        \"Wait\": {\n\
+          \            \"Type\": \"Wait\",\n            \"Seconds\": 10,\n       \
+          \     \"Next\": \"Iterator\"\n        },\n        \"Done\": {\n        \
+          \    \"Type\": \"Pass\",\n            \"End\": true\n        }\n    }\n}"
+        - lambdaArn:
+            Fn::GetAtt:
+            - IteratorFunction
+            - Arn
+      RoleArn:
+        Fn::GetAtt:
+        - StatesExecutionRole
+        - Arn
+  Cron:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Executes Step Functions every minute
+      ScheduleExpression: rate(1 minute)
+      State: ENABLED
+      Targets:
+      - Arn:
+          Ref: LambdaTimerStateMachine
+        Id: LambdaTimerStateMachine
+        RoleArn:
+          Fn::GetAtt:
+          - CronExecutionRole
+          - Arn
+  CronExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: events.amazonaws.com
+          Action: sts:AssumeRole
+      Path: /service-role/
+      Policies:
+      - PolicyName: CloudWatchEventsStartStepFunctions
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: states:StartExecution
+            Resource:
+              Ref: LambdaTimerStateMachine

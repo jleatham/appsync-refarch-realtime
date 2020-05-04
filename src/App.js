@@ -354,7 +354,7 @@ class App extends Component {
                             <td className="p-2">
                               <form onSubmit={this.handleUser}>
                                 <div className="input-group ">
-                                  <input type="text" className="form-control form-control-lg" name="user" placeholder="Choose your Handle to Chat" aria-label=">" aria-describedby="basic-addon2" value={this.state.value} onChange={this.handleChange}/>
+                                  <input type="text" className="form-control form-control-lg" name="user" placeholder="Git...Choose your Handle to Chat" aria-label=">" aria-describedby="basic-addon2" value={this.state.value} onChange={this.handleChange}/>
                                   <div className="input-group-append">
                                     <button className="btn btn-dark border-light" type="submit"><i className="fas fa-user"></i></button>
                                   </div>
